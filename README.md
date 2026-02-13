@@ -40,7 +40,8 @@ You need to set the variables in the `main.py` file for the ES python client:
 ```python
 # Variables to configure the ES client:
 "elasticsearch_host": "https://localhost:9200",
-"elasticsearch_ca_path": "/home/c/.elastic-package/profiles/default/certs/elasticsearch/ca-cert.pem",
+# Path to the Elasticsearch certificate. If not set, the program will use the default system/certifi CA bundle.
+"elasticsearch_ca_path": "",
 "elasticsearch_user": "elastic",
 "elasticsearch_pwd": "changeme",
 
@@ -50,10 +51,22 @@ You need to set the variables in the `main.py` file for the ES python client:
 "cloud_id": "",
 ```
 
-You also need to set the name of the data stream you want to test:
+Alternatively, you can set ES credentials via environment variables. When set,
+they override the hardcoded defaults:
+
+```bash
+export ELASTIC_PACKAGE_ELASTICSEARCH_HOST=https://localhost:9200
+export ELASTIC_PACKAGE_ELASTICSEARCH_USERNAME=elastic
+export ELASTIC_PACKAGE_ELASTICSEARCH_PASSWORD=changeme
+```
+
+You also need to set the list of data streams you want to test. The program
+will run for each data stream in the list:
 ```python
-# Name of the data stream to test
-"data_stream": "metrics-aws.s3_storage_lens-default",
+# List of data streams to test (the program will run for each one)
+"data_streams": [
+    "metrics-aws.s3_storage_lens-default",
+],
 ```
 
 Additionally, the `main.py` has defaults for:
@@ -94,13 +107,14 @@ and the index number for the index you want to use for the settings and mappings
 - Do you want to get in a local directory some of the files that are being overwritten?
 Set these variables:
     ```python
-    # Name of the directory to place files.
-    "directory_overlapping_files": "overwritten-docs" + "-" + program_defaults["data_stream"],
-
     # Do you want to get in your @directory_overlapping_files the files that are overlapping?
     # Set this to True and delete the directory named directory_overlapping_files if it already exists!
     "get_overlapping_files": True,
     ```
+  > **Note**: The `directory_overlapping_files`, `failed_docs_file`, and `duplicate_docs_file` paths
+are automatically generated per data stream (e.g. `overwritten-docs-metrics-aws.usage-default`,
+`failed-docs-metrics-aws.usage-default.ndjson`, and
+`duplicate-docs-metrics-aws.usage-default.ndjson`). You can override them via CLI flags if needed.
   > **Note**: The directory should not exist! Otherwise, the files will not be placed, since we are
 not deleting the directory. A warning will be shown indicating that the files
 were not placed:
@@ -146,10 +160,16 @@ python main.py --help
 
 To see the options. The default values are also displayed.
 
-Example:
+Examples:
 
-```python
+```console
 python main.py --get_overlapping_files False --max_docs 40000
+```
+
+You can also pass multiple data streams as a comma-separated list:
+
+```console
+python main.py --data_streams "metrics-aws.usage-default,metrics-aws.s3_storage_lens-default"
 ```
 
 ## Algorithm
@@ -157,7 +177,7 @@ python main.py --get_overlapping_files False --max_docs 40000
 
 ![img.png](images/algorithm.png)
 
-The algorithm for the program is as follows:
+The algorithm for the program is as follows (repeated for each data stream):
 1. Given the data stream name, we get all its indices.
 2. Given the documents index number provided by the user (or the default, 0), we obtain the index
 name from the list we got on step 1.
@@ -168,12 +188,12 @@ we obtain the index name from the list we got on step 1.
 5. We update those same settings so TSDB is enabled.
 6. We create a new index given the settings and mappings. This index has
 TSDB enabled.
-7. We place the documents in index obtained on step 2 on our
-TSDB enabled new index.
-8. We compare if the number of files placed in the TSDB index is the same
-as the number of files we retrieved from the documents index.
-9. If it is the same, the program ends.
-10. Otherwise, we will place all updated documents in a new index.
+7. We copy documents from the index obtained on step 2 to our
+TSDB enabled new index using the bulk API (mimicking how Elastic Agent sends data).
+8. We check the bulk response for each document: created, duplicate (409 version conflict),
+or other errors.
+9. Documents that failed with errors other than duplicates are saved to an NDJSON file for inspection. Duplicate documents (409 version conflicts) are saved to a separate NDJSON file.
+10. If there are duplicates, we place all updated documents in a new index.
 11. The dimensions and timestamp of the documents in this new index
 will be displayed in the output.
 
@@ -190,8 +210,19 @@ In case TSDB migration was successful, ie, no loss of data occurred.
 </summary>
 
 ```console
+Values being used:
+	elasticsearch_host = https://localhost:9200
+	elasticsearch_ca_path = 
+	elasticsearch_user = elastic
+	elasticsearch_pwd = ********
+	data_streams = metrics-aws.usage-default
+	...
+
 You're testing with version 8.8.0-SNAPSHOT.
 
+============================================================
+[1/1] Processing data stream: metrics-aws.usage-default
+============================================================
 Testing data stream metrics-aws.usage-default.
 Index being used for the documents is .ds-metrics-aws.usage-default-2023.06.29-000001.
 Index being used for the settings and mappings is .ds-metrics-aws.usage-default-2023.06.29-000001.
@@ -217,21 +248,32 @@ The time series fields for the TSDB index are:
 		- cloud.account.id
 		- cloud.region
 
-Index tsdb-index-enabled successfully created.
+Index tsdb-metrics-aws.usage-default successfully created.
 
-Copying documents from .ds-metrics-aws.usage-default-2023.06.29-000001 to tsdb-index-enabled...
-All 5000 documents taken from index .ds-metrics-aws.usage-default-2023.06.29-000001 were successfully placed to index tsdb-index-enabled.
+Copying documents from .ds-metrics-aws.usage-default-2023.06.29-000001 to tsdb-metrics-aws.usage-default...
+
+Bulk indexing summary for .ds-metrics-aws.usage-default-2023.06.29-000001 -> tsdb-metrics-aws.usage-default:
+	Total documents sent: 5000
+	Created: 5000
+	Duplicates (409): 0
+	Failed: 0
 ```
 </details>
 
 <details>
 <summary>
-In case TSDB migration was not successful.
+In case TSDB migration was not successful (duplicates detected).
 </summary>
 
 ```console
+Values being used:
+	...
+
 You're testing with version 8.8.0-SNAPSHOT.
 
+============================================================
+[1/1] Processing data stream: metrics-aws.usage-default
+============================================================
 Testing data stream metrics-aws.usage-default.
 Index being used for the documents is .ds-metrics-aws.usage-default-2023.06.29-000001.
 Index being used for the settings and mappings is .ds-metrics-aws.usage-default-2023.06.29-000001.
@@ -257,13 +299,21 @@ The time series fields for the TSDB index are:
 		- cloud.account.id
 		- cloud.region
 
-Index tsdb-index-enabled successfully created.
+Index tsdb-metrics-aws.usage-default successfully created.
 
-Copying documents from .ds-metrics-aws.usage-default-2023.06.29-000001 to tsdb-index-enabled...
-WARNING: Out of 10000 documents from the index .ds-metrics-aws.usage-default-2023.06.29-000001, 152 of them were discarded.
+Copying documents from .ds-metrics-aws.usage-default-2023.06.29-000001 to tsdb-metrics-aws.usage-default...
+
+Bulk indexing summary for .ds-metrics-aws.usage-default-2023.06.29-000001 -> tsdb-metrics-aws.usage-default:
+	Total documents sent: 10000
+	Created: 9848
+	Duplicates (409): 152
+	Failed: 0
+
+WARNING: 152 out of 10000 documents were duplicates (409 version conflict).
+Saved 152 failed documents to duplicate-docs-metrics-aws.usage-default.ndjson
 
 Overwritten documents will be placed in new index.
-Index tsdb-overwritten-docs successfully created.
+Index tsdb-overwritten-metrics-aws.usage-default successfully created.
 
 The timestamp and dimensions of the first 10 overwritten documents are:
 - Timestamp 2023-06-29T13:24:00.000Z:
@@ -379,13 +429,13 @@ change the data view to the one you just created:
 
 The index you use for documents is obtained in this line:
 ```python
-all_placed = copy_from_data_stream(...)
+total, created, duplicates, error_count, failed_docs = copy_from_data_stream(...)
 ```
 In this, it would be the default, which is 0. If you set your own
 `docs_index`, then that one will be used.
 
 It does not matter if TSDB is enabled or not. The program will only
-use this index to retrieve documents, so as long as there is data,
+use this index to retrieve documents (via the scroll/scan API), so as long as there is data,
 nothing should go wrong.
 
 However, does it make sense to use an index with TSDB enabled to retrieve
@@ -403,15 +453,18 @@ the routing path.
 **What is the name of the index where we are placing the documents
 with TSDB enabled?**
 
-The index is named `tsdb-index-enabled`. You should be able to see this information
-in the output messages.
+The index is named `tsdb-<data_stream>`, for example `tsdb-metrics-aws.usage-default`.
+Each data stream gets its own TSDB index so results are preserved when testing
+multiple data streams at once. You should be able to see this information in the
+output messages.
 
 
 **What is the name of the index where we are placing the overwritten
 documents?**
 
-The index is named `tsdb-overwritten-docs`. You should be able to see this information
-in the output messages.
+The index is named `tsdb-overwritten-<data_stream>`, for example
+`tsdb-overwritten-metrics-aws.usage-default`. You should be able to see this
+information in the output messages.
 
 
 **Where are the defaults for every index created and everything else

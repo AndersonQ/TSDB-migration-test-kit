@@ -5,6 +5,8 @@ For example: discard_unknown_settings discard settings that are not currently ac
 in the ES Python client. If the situation changes, the function will no longer be accurate.
 """
 
+import sys
+
 # This is a dictionary for all the time series fields accepted as of today (29.June.2023).
 # routing_path is also part of the dictionary since it is mandatory to have it for a time series index.
 time_series_fields = {
@@ -18,11 +20,15 @@ time_series_fields = {
 # As of today (29.June.2023), only keyword fields are accepted.
 accepted_fields_for_routing = ["keyword"]
 
-# The name of the index with TSDB enabled.
-tsdb_index = "tsdb-index-enabled"
-# This is the index in which we will store the documents that were overwritten - ie, the ones that caused us
-# to lose data.
-overwritten_docs_index = "tsdb-overwritten-docs"
+
+def make_tsdb_index_name(data_stream):
+    """Return the TSDB-enabled index name for a given data stream."""
+    return "tsdb-" + data_stream
+
+
+def make_overwritten_index_name(data_stream):
+    """Return the overwritten-docs index name for a given data stream."""
+    return "tsdb-overwritten-" + data_stream
 
 
 # Some settings cause an error as they are not known to ElasticSearch Python client.
@@ -41,6 +47,9 @@ def get_time_series_fields(mappings: {}):
     Place all fields in the time time_series_fields dictionary.
     :param mappings: Mappings dictionary.
     """
+    for key in time_series_fields:
+        time_series_fields[key].clear()
+
     fields = mappings["properties"]
 
     # A function to flatten the name of the fields
@@ -75,7 +84,7 @@ def get_time_series_fields(mappings: {}):
 
     if len(time_series_fields["routing_path"]) == 0:
         print("Routing path is empty. Program will end.")
-        exit(0)
+        sys.exit(1)
 
     print("The time series fields for the TSDB index are: ")
     for key in time_series_fields:
